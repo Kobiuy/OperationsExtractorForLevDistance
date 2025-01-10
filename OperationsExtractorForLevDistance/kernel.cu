@@ -40,7 +40,7 @@ __global__ void CalculateXMatrixKernel(char* T, uint16_t* xMatrix, size_t* tSize
 	}
 }
 
-__global__ void CalculateDistanceMatrixKernel(char* T, char* P, uint16_t* xMatrix, uint16_t* dMatrix, size_t* pSize, size_t* tSize/*, bool* blockDone*/, int* activeBlocks)
+__global__ void CalculateDistanceMatrixKernel(char* T, char* P, uint16_t* xMatrix, uint16_t* dMatrix, size_t* pSize, size_t* tSize/*, bool* blockDone*//*, int* activeBlocks*/)
 {
 	uint16_t global_tid = threadIdx.x + blockDim.x * blockIdx.x;
 	uint8_t lane_id = threadIdx.x % 32;
@@ -55,10 +55,6 @@ __global__ void CalculateDistanceMatrixKernel(char* T, char* P, uint16_t* xMatri
 
 	//if (tid == 0)
 	//	printf("Starting Block %d\n", blockIdx.x);
-	if (tid == 0) {
-		atomicAdd(activeBlocks, 1);
-		//blockDone[blockIdx.x] = true;
-	}
 	for (uint16_t row = 0; row <= *pSize; row++) {
 		__syncthreads();
 
@@ -294,9 +290,9 @@ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, uint16_t* dMatr
 	cudaError_t cudaStatus;
 	uint16_t* dev_xMatrix;
 	//bool* dev_blockDone;
-	int* dev_activeBlocks;
+	//int* dev_activeBlocks;
 	int threadsPerBlock = 1024;
-	int zero = 0;
+	//int zero = 0;
 	size_t totalThreads = tSize + 1; // TODO Changed this
 	int blocks = (totalThreads + threadsPerBlock - 1) / threadsPerBlock;
 	cout << "Blocks: " << blocks << " Threads: " << totalThreads << endl;
@@ -324,11 +320,11 @@ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, uint16_t* dMatr
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
-	cudaStatus = cudaMalloc((void**)&dev_activeBlocks, sizeof(int));
+	/*cudaStatus = cudaMalloc((void**)&dev_activeBlocks, sizeof(int));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
-	}
+	}*/
 	cudaStatus = cudaMalloc((void**)&dev_dMatrix, (pSize + 1) * (tSize + 1) * sizeof(uint16_t));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
@@ -389,7 +385,7 @@ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, uint16_t* dMatr
 
 	// Launch a kernel on the GPU with one thread for each element.
 	ts = high_resolution_clock::now();
-	CalculateDistanceMatrixKernel << <blocks, threadsPerBlock >> > (dev_T, dev_P, dev_xMatrix, dev_dMatrix, dev_pSize, dev_tSize/*, dev_blockDone*/, dev_activeBlocks);
+	CalculateDistanceMatrixKernel << <blocks, threadsPerBlock >> > (dev_T, dev_P, dev_xMatrix, dev_dMatrix, dev_pSize, dev_tSize/*, dev_blockDone*//*, dev_activeBlocks*/);
 
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
@@ -423,7 +419,7 @@ Error:
 	cudaFree(dev_tSize);
 	cudaFree(dev_pSize);
 	//cudaFree(dev_blockDone);
-	cudaFree(dev_activeBlocks);
+	//cudaFree(dev_activeBlocks);
 
 	return cudaStatus;
 }
