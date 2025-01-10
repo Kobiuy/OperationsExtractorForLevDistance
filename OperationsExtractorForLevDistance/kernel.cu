@@ -38,7 +38,7 @@ __global__ void CalculateXMatrixKernel(char* T, uint16_t* xMatrix, size_t* tSize
 	}
 }
 
-__global__ void CalculateDistanceMatrixKernel(char* T, char* P, uint16_t* xMatrix, uint16_t* dMatrix, size_t* pSize, size_t* tSize, bool* blockDone, int* activeBlocks)
+__global__ void CalculateDistanceMatrixKernel(char* T, char* P, uint16_t* xMatrix, uint16_t* dMatrix, size_t* pSize, size_t* tSize/*, bool* blockDone*/, int* activeBlocks)
 {
 	uint16_t global_tid = threadIdx.x + blockDim.x * blockIdx.x;
 	uint8_t lane_id = threadIdx.x % 32;
@@ -51,11 +51,11 @@ __global__ void CalculateDistanceMatrixKernel(char* T, char* P, uint16_t* xMatri
 	uint16_t Avar = 0;
 	// ROW = i global_tid = j
 
-	if (tid == 0)
-		printf("Starting Block %d\n", blockIdx.x);
+	//if (tid == 0)
+	//	printf("Starting Block %d\n", blockIdx.x);
 	if (tid == 0) {
 		atomicAdd(activeBlocks, 1);
-		blockDone[blockIdx.x] = true;
+		//blockDone[blockIdx.x] = true;
 	}
 	for (uint16_t row = 0; row <= *pSize; row++) {
 		__syncthreads();
@@ -64,10 +64,10 @@ __global__ void CalculateDistanceMatrixKernel(char* T, char* P, uint16_t* xMatri
 		//__syncthreads();
 
 		if (tid == 0 && blockIdx.x != 0) { // waiting for other blocks
-			printf("Waiting for block %d\n", blockIdx.x - 1);
-			while (!blockDone[blockIdx.x - 1] && dMatrix[(row - 1) * (*tSize + 1) + (global_tid - 1)] == 65535) {}
-			printf("Block %d Waited\n", blockIdx.x);
-			blockDone[blockIdx.x - 1] = false;
+			//printf("Waiting for block %d\n", blockIdx.x - 1);
+			while (/*!blockDone[blockIdx.x - 1] &&*/ dMatrix[(row - 1) * (*tSize + 1) + (global_tid - 1)] == UINT16_MAX) {}
+			//printf(""/*Block % d Waited\n", blockIdx.x*/);
+			//blockDone[blockIdx.x - 1] = false;
 			Avar = dMatrix[(row - 1) * (*tSize + 1) + (global_tid - 1)];
 		}
 		__syncthreads();
@@ -91,13 +91,13 @@ __global__ void CalculateDistanceMatrixKernel(char* T, char* P, uint16_t* xMatri
 		}
 
 		dMatrix[row * (*tSize + 1) + global_tid] = Dvar;
-		if (tid == blockDim.x - 1 && blockIdx.x != *activeBlocks - 1) {
-			while (blockDone[blockIdx.x]) {}
-			blockDone[blockIdx.x] = true;
-		}
+		//if (tid == blockDim.x - 1 && blockIdx.x != *activeBlocks - 1) {
+		//	while (blockDone[blockIdx.x]) {}
+		//	blockDone[blockIdx.x] = true;
+		//}
 	}
-	if (tid == 0)
-		printf("Block %d Done\n", blockIdx.x);
+	//if (tid == 0 || global_tid == *tSize)
+	//	printf("Block %d Done\n", blockIdx.x);
 }
 
 int main(int argc, char** argv)
@@ -145,7 +145,7 @@ int main(int argc, char** argv)
 	}
 	for (size_t i = 0; i < pSize + 1; ++i) {
 		for (size_t j = 0; j < tSize + 1; ++j) {
-			dMatrix[i * tSize + j] = 65535;
+			dMatrix[i * tSize + j] = UINT16_MAX;
 		}
 	}
 	uint16_t* xMatrix = (uint16_t*)malloc((tSize + 1) * 26 * sizeof(uint16_t));
@@ -282,7 +282,7 @@ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, uint16_t* dMatr
 	size_t* dev_pSize;
 	cudaError_t cudaStatus;
 	uint16_t* dev_xMatrix;
-	bool* dev_blockDone;
+	//bool* dev_blockDone;
 	int* dev_activeBlocks;
 	int threadsPerBlock = 1024;
 	int zero = 0;
@@ -302,11 +302,11 @@ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, uint16_t* dMatr
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
-	cudaStatus = cudaMalloc((void**)&dev_blockDone, blocks * sizeof(bool));
+	/*cudaStatus = cudaMalloc((void**)&dev_blockDone, blocks * sizeof(bool));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
-	}
+	}*/
 
 	cudaStatus = cudaMalloc((void**)&dev_P, (pSize + 1) * sizeof(char));
 	if (cudaStatus != cudaSuccess) {
@@ -376,7 +376,7 @@ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, uint16_t* dMatr
 		goto Error;
 	}
 	// Launch a kernel on the GPU with one thread for each element.
-	CalculateDistanceMatrixKernel << <blocks, threadsPerBlock >> > (dev_T, dev_P, dev_xMatrix, dev_dMatrix, dev_pSize, dev_tSize, dev_blockDone, dev_activeBlocks);
+	CalculateDistanceMatrixKernel << <blocks, threadsPerBlock >> > (dev_T, dev_P, dev_xMatrix, dev_dMatrix, dev_pSize, dev_tSize/*, dev_blockDone*/, dev_activeBlocks);
 
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
@@ -392,7 +392,7 @@ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, uint16_t* dMatr
 		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
 		goto Error;
 	}
-
+	cout << "EndOfKernel" << endl;
 	// Copy output vector from GPU buffer to host memory.
 	cudaStatus = cudaMemcpy(dMatrix, dev_dMatrix, (pSize + 1) * (tSize + 1) * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
@@ -407,7 +407,7 @@ Error:
 	cudaFree(dev_xMatrix);
 	cudaFree(dev_tSize);
 	cudaFree(dev_pSize);
-	cudaFree(dev_blockDone);
+	//cudaFree(dev_blockDone);
 	cudaFree(dev_activeBlocks);
 
 	return cudaStatus;
