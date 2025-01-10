@@ -16,8 +16,10 @@
 #include <iomanip>
 #include <iostream>
 #include <stack>
+#include <chrono>
 #define A_SIZE 26
 using namespace std;
+using namespace std::chrono;
 cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, uint16_t* dMatrix, uint16_t* xMatrix, const size_t tSize, const size_t pSize);
 cudaError_t XMatrixWithCuda(const char* T, uint16_t* xMatrix, const size_t tSize);
 string CalculatePathFromD(uint16_t* dMatrix, const char* T, const char* P, const size_t tSize, const size_t pSize);
@@ -196,6 +198,9 @@ int main(int argc, char** argv)
 
 cudaError_t XMatrixWithCuda(const char* T, uint16_t* xMatrix, const size_t tSize)
 {
+	std::chrono::time_point<std::chrono::high_resolution_clock> ts;
+	std::chrono::time_point<std::chrono::high_resolution_clock> te;
+
 	char* dev_T;
 	size_t* dev_tSize;
 	uint16_t* dev_xMatrix;
@@ -241,7 +246,7 @@ cudaError_t XMatrixWithCuda(const char* T, uint16_t* xMatrix, const size_t tSize
 	}
 
 	// Launch a kernel on the GPU with one thread for each element.
-
+	ts = high_resolution_clock::now();
 	CalculateXMatrixKernel << <1, 26 >> > (dev_T, dev_xMatrix, dev_tSize);
 
 	// Check for any errors launching the kernel
@@ -257,6 +262,9 @@ cudaError_t XMatrixWithCuda(const char* T, uint16_t* xMatrix, const size_t tSize
 		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
 		goto Error;
 	}
+
+	te = high_resolution_clock::now();
+	cout << "Time of CalculateDistanceMatrixKernel:    " << setw(7) << 0.001 * duration_cast<microseconds>(te - ts).count() << " nsec" << endl;
 
 	// Copy output vector from GPU buffer to host memory.
 	cudaStatus = cudaMemcpy(xMatrix, dev_xMatrix, A_SIZE * (tSize + 1) * sizeof(uint16_t), cudaMemcpyDeviceToHost);
@@ -275,6 +283,9 @@ Error:
 
 cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, uint16_t* dMatrix, uint16_t* xMatrix, const size_t tSize, const size_t pSize)
 {
+	std::chrono::time_point<std::chrono::high_resolution_clock> ts;
+	std::chrono::time_point<std::chrono::high_resolution_clock> te;
+
 	char* dev_T;
 	char* dev_P;
 	uint16_t* dev_dMatrix;
@@ -375,7 +386,9 @@ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, uint16_t* dMatr
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
+
 	// Launch a kernel on the GPU with one thread for each element.
+	ts = high_resolution_clock::now();
 	CalculateDistanceMatrixKernel << <blocks, threadsPerBlock >> > (dev_T, dev_P, dev_xMatrix, dev_dMatrix, dev_pSize, dev_tSize/*, dev_blockDone*/, dev_activeBlocks);
 
 	// Check for any errors launching the kernel
@@ -392,7 +405,9 @@ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, uint16_t* dMatr
 		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
 		goto Error;
 	}
-	cout << "EndOfKernel" << endl;
+	te = high_resolution_clock::now();
+	cout << "Time of CalculateDistanceMatrixKernel:    " << setw(7) << 0.001 * duration_cast<microseconds>(te - ts).count() << " nsec" << endl;
+
 	// Copy output vector from GPU buffer to host memory.
 	cudaStatus = cudaMemcpy(dMatrix, dev_dMatrix, (pSize + 1) * (tSize + 1) * sizeof(uint16_t), cudaMemcpyDeviceToHost);
 	if (cudaStatus != cudaSuccess) {
