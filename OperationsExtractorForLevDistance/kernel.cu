@@ -281,7 +281,7 @@ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, uint16_t* dMatr
 	cudaError_t cudaStatus;
 	uint16_t* dev_xMatrix;
 	int threadsPerBlock = 1024;
-	int zero = 0;
+	//int zero = 0;
 	size_t totalThreads = tSize + 1; // TODO Changed this
 	int blocks = (totalThreads + threadsPerBlock - 1) / threadsPerBlock;
 	cout << "Blocks: " << blocks << " Threads: " << totalThreads << endl;
