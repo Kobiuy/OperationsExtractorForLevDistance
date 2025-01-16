@@ -2,8 +2,9 @@
 #include "device_launch_parameters.h"
 
 // compute-sanitizer OperationsExtractorForLevDistance.exe catgactg tactg> a.txt 2>&1
-
-// TODO String Form
+// Todo - poprawa sync
+// Pytania do Pana:
+// Czy można zrobić ograniczenie na rozmiar słów np. 65 tysięcy znaków (wtedy więcej można odpalic na raz wątków, więc działa szybciej)
 #include <stdio.h>
 #include <cmath>
 #include <string>
@@ -11,29 +12,38 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <stack>
 #include <chrono>
 #define A_SIZE 26
 using namespace std;
 using namespace std::chrono;
 
-__host__ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, int* dMatrix, int* xMatrix, const size_t tSize, const size_t pSize);
+__host__ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, int* dMatrix, int* xMatrix, const uint32_t tSize, const uint32_t pSize);
 __host__ int main(int argc, char** argv);
 __host__ void ReadFile(const char* filename, string* line1, string* line2);
-__host__ cudaError_t XMatrixWithCuda(const char* T, int* xMatrix, const size_t tSize);
-__host__ string CalculatePathFromD(int* dMatrix, const char* T, const char* P, const size_t tSize, const size_t pSize, int* distance);
+__host__ cudaError_t XMatrixWithCuda(const char* T, int* xMatrix, const uint32_t tSize);
+__host__ string CalculatePathFromD(int* dMatrix, const char* T, const char* P, const uint32_t tSize, const uint32_t pSize, int* distance);
 __host__ void WriteToFile(string result, int distance);
 __host__ void WrongArgsPrint();
-__host__ void PrintMatrix(int* matrix, size_t height, size_t width);
-__host__ void PrintMatrixToFile(int* matrix, size_t height, size_t width);
+__host__ void PrintMatrix(int* matrix, uint32_t height, uint32_t width);
+__host__ void PrintMatrixToFile(int* matrix, uint32_t height, uint32_t width);
 
-__global__ void CalculateXMatrixKernel(char* T, int* xMatrix, size_t* tSize) {
+// Kod "rozgrzewający" kartę https://stackoverflow.com/questions/59815212/best-way-to-warm-up-the-gpu-with-cuda
+__global__ void warm_up_gpu() {
+	unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
+	float ia, ib;
+	ia = ib = 0.0f;
+	ib += ia + tid;
+}
+__global__ void CalculateXMatrixKernel(char* T, int* xMatrix, uint32_t* tSize) {
 	int global_tid = threadIdx.x + blockDim.x * blockIdx.x;
 	uint8_t aSize = 26;
 	int firstInRow = global_tid * (*tSize + 1);
 	xMatrix[firstInRow] = 0;
+	char myLetter = global_tid + 'A';
 	for (int i = 1; i <= *tSize; ++i) {
-		;		if (T[i] == global_tid + 'A') {
+		;		if (T[i] == myLetter) {
 			xMatrix[i + firstInRow] = i;
 		}
 		else {
@@ -42,15 +52,15 @@ __global__ void CalculateXMatrixKernel(char* T, int* xMatrix, size_t* tSize) {
 	}
 }
 
-__global__ void CalculateDistanceMatrixKernel(char* T, char* P, int* xMatrix, int* dMatrix, size_t* pSize, size_t* tSize)
+__global__ void CalculateDistanceMatrixKernel(char* T, char* P, int* xMatrix, int* dMatrix, uint32_t* pSize, uint32_t* tSize)
 {
-	size_t pSizeLocal = *pSize;
-	size_t tSizeLocal = *tSize;
+#pragma region Variables
+	uint32_t pSizeLocal = *pSize;
+	uint32_t tSizeLocal = *tSize;
 	int global_tid = threadIdx.x + blockDim.x * blockIdx.x;
-	int tid = threadIdx.x;
+	uint16_t tid = threadIdx.x;
 	uint8_t lane_id = threadIdx.x % 32;
-	int warpId = threadIdx.x / 32;
-
+	uint8_t warpId = threadIdx.x / 32;
 	extern __shared__ char p[];
 	char t = T[global_tid];
 	int Dvar = 0;
@@ -58,59 +68,84 @@ __global__ void CalculateDistanceMatrixKernel(char* T, char* P, int* xMatrix, in
 	int Cvar = 0;
 	int Avar = 0;
 	int Xvar = 0;
+	int prevDvarId;
+	int firstInRowId;
+#pragma endregion
 
-	for (int i = tid; i <= pSizeLocal; i += blockDim.x) {
+	for (int i = tid; i <= pSizeLocal; i += blockDim.x) { // Kopiowanie p do pamięci współdzielonej
 		p[i] = P[i];
 	}
+
 	if (global_tid > tSizeLocal) return;
 
-	for (int row = 0; row <= pSizeLocal; ++row) {
+	dMatrix[global_tid] = global_tid; // Pierwszy wiersz tablicy
+	Dvar = global_tid;
+	firstInRowId = 0;
 
+	for (int row = 1; row <= pSizeLocal; ++row) {
+
+		prevDvarId = firstInRowId + (global_tid - 1);
+		while (blockIdx.x != 0 && tid == 0 && dMatrix[prevDvarId] == -1) {} // Czekanie na poprzedni blok
 		__syncthreads();
+
 		Avar = __shfl_up(Dvar, 1);
-		if (lane_id == 0 && global_tid != 0) { // waiting for other blocks
-			while (dMatrix[(row - 1) * (tSizeLocal + 1) + (global_tid - 1)] == -1) {}
-			Avar = dMatrix[(row - 1) * (tSizeLocal + 1) + (global_tid - 1)];
+		if (lane_id == 0 && global_tid != 0) {
+			Avar = dMatrix[prevDvarId];
 		}
+		//__syncthreads();
+		//Avar = __shfl_up(Dvar, 1);
+		//temp = (row - 1) * (tSizeLocal + 1) + (global_tid - 1);
+		//if (lane_id == 0 && global_tid != 0) { // waiting for other blocks
+		//	while (dMatrix[temp] == -1) {}
+		//	Avar = dMatrix[temp];
+		//}
 
 		Bvar = Dvar;
 
-		if (row == 0) {
-			Dvar = global_tid;
-		}
-		else if (global_tid == 0) {
+		if (global_tid == 0) {
 			Dvar = row;
 		}
 		else if (t == p[row]) {
 			Dvar = Avar;
 		}
-		else if (xMatrix[(p[row] - 'A') * (tSizeLocal + 1) + global_tid] == 0) {
-			Dvar = 1 + min(Avar, min(Bvar, row + global_tid - 1));
-
-		}
 		else {
+
 			Xvar = xMatrix[(p[row] - 'A') * (tSizeLocal + 1) + global_tid];
-			Cvar = dMatrix[(row - 1) * (tSizeLocal + 1) + (Xvar - 1)];
-			Dvar = 1 + min(Avar, min(Bvar, Cvar + global_tid - 1 - Xvar));
+			if (Xvar == 0) {
+				Dvar = 1 + min(Avar, min(Bvar, row + global_tid - 1));
+
+			}
+			else {
+				Cvar = dMatrix[firstInRowId + (Xvar - 1)];
+				Dvar = 1 + min(Avar, min(Bvar, Cvar + global_tid - 1 - Xvar));
+			}
 		}
 
-		dMatrix[row * (tSizeLocal + 1) + global_tid] = Dvar;
+		firstInRowId += (tSizeLocal + 1);
+		dMatrix[firstInRowId + global_tid] = Dvar;
+
 	}
 }
 
 int main(int argc, char** argv)
 {
+#pragma region Variables
+	const char* filename = "dane.txt";
+	string line1, line2;
+	int distance;
+
+#pragma endregion
+
+#pragma region Arguments
 	if (argc > 2) {
 		WrongArgsPrint();
 		return 1;
 	}
-	const char* filename = "dane.txt";
 	if (argc == 2)
 		filename = argv[1];
-
+#pragma endregion
 
 	// Read File
-	string line1, line2;
 	ReadFile(filename, &line1, &line2);
 	if (line1 == "" || line2 == "") {
 		cerr << "Error reading file" << endl;
@@ -119,45 +154,48 @@ int main(int argc, char** argv)
 
 	const char* T = line1.c_str();
 	const char* P = line2.c_str();
-
-	const size_t tSize = line1.length();
-	const size_t pSize = line2.length();
-	int distance;
+	const uint32_t tSize = line1.length();
+	const uint32_t pSize = line2.length();
 
 	int* dMatrix = (int*)malloc((tSize + 1) * (pSize + 1) * sizeof(int));
 	if (dMatrix == NULL) {
-		perror("Memory allocation failed");
+		perror("Memory allocation failed for dMatrix");
 		return 1;
 	}
-	for (size_t i = 0; i < pSize + 1; ++i) {
-		for (size_t j = 0; j < tSize + 1; ++j) {
+	int* xMatrix = (int*)malloc((tSize + 1) * 26 * sizeof(int));
+	if (dMatrix == NULL) {
+		perror("Memory allocation failed for xMatrix");
+		return 1;
+	}
+
+	for (uint32_t i = 0; i < pSize + 1; ++i) { // Setting Sentinel
+		for (uint32_t j = 0; j < tSize + 1; ++j) {
 			dMatrix[i * (tSize + 1) + j] = -1;
 		}
 	}
-	int* xMatrix = (int*)malloc((tSize + 1) * 26 * sizeof(int));
 
 	cudaError_t cudaStatus = XMatrixWithCuda(T, xMatrix, tSize);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "XMatrixWithCuda failed!");
 		return 1;
 	}
-	//PrintMatrix(xMatrix, 26, tSize + 1);
 
+	//PrintMatrix(xMatrix, 26, tSize + 1);
 
 	cudaStatus = DistanceMatrixWithCuda(T, P, dMatrix, xMatrix, tSize, pSize);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "DistanceMatrixWithCuda failed!");
 		return 1;
 	}
-	cout << "D Calculated" << endl;
 
 	//PrintMatrix(dMatrix, pSize + 1, tSize + 1);
-	//PrintMatrixToFile(dMatrix, pSize + 1, tSize + 1);
+	PrintMatrixToFile(dMatrix, pSize + 1, tSize + 1);
 
 	string result = CalculatePathFromD(dMatrix, T, P, tSize, pSize, &distance);
-	std::cout << result << endl;
+	//std::cout << result << endl;
 	std::cout << distance << endl;
 	std::cout << "Distance: " << dMatrix[pSize * (tSize + 1) + tSize] << endl;
+
 
 	WriteToFile(result, distance);
 
@@ -170,15 +208,16 @@ int main(int argc, char** argv)
 	return 0;
 }
 
-__host__ cudaError_t XMatrixWithCuda(const char* T, int* xMatrix, const size_t tSize)
+__host__ cudaError_t XMatrixWithCuda(const char* T, int* xMatrix, const uint32_t tSize)
 {
+#pragma region Variables
 	std::chrono::time_point<std::chrono::high_resolution_clock> ts;
 	std::chrono::time_point<std::chrono::high_resolution_clock> te;
-
 	char* dev_T;
-	size_t* dev_tSize;
+	uint32_t* dev_tSize;
 	int* dev_xMatrix;
 	cudaError_t cudaStatus;
+#pragma endregion
 
 	// Choose which GPU to run on, change this on a multi-GPU system.
 	cudaStatus = cudaSetDevice(0);
@@ -186,6 +225,7 @@ __host__ cudaError_t XMatrixWithCuda(const char* T, int* xMatrix, const size_t t
 		fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
 		goto Error;
 	}
+#pragma region Malloc
 
 	// Allocate GPU buffers for three vectors (two input, one output)    .
 	cudaStatus = cudaMalloc((void**)&dev_T, (tSize + 1) * sizeof(char));
@@ -198,27 +238,42 @@ __host__ cudaError_t XMatrixWithCuda(const char* T, int* xMatrix, const size_t t
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
-	cudaStatus = cudaMalloc((void**)&dev_tSize, sizeof(size_t));
+	cudaStatus = cudaMalloc((void**)&dev_tSize, sizeof(uint32_t));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
+#pragma endregion
+#pragma region Memcpy
 	// Copy host to device
 	cudaStatus = cudaMemcpy(dev_T + 1, T, tSize * sizeof(char), cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!");
 		goto Error;
 	}
-	cudaStatus = cudaMemcpy(dev_tSize, &tSize, sizeof(size_t), cudaMemcpyHostToDevice);
+	cudaStatus = cudaMemcpy(dev_tSize, &tSize, sizeof(uint32_t), cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!");
 		goto Error;
 	}
-
+#pragma endregion
+#pragma region WarmUp
+	warm_up_gpu << <1, 26 >> > ();
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "warm_up_gpu launch failed: %s\n", cudaGetErrorString(cudaStatus));
+		goto Error;
+	}
+	cudaStatus = cudaDeviceSynchronize();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching warm_up_gpu!\n", cudaStatus);
+		goto Error;
+	}
+#pragma endregion
 	// Launch a kernel on the GPU with one thread for each element.
 	ts = high_resolution_clock::now();
 	CalculateXMatrixKernel << <1, 26 >> > (dev_T, dev_xMatrix, dev_tSize);
-
+#pragma region PostKernel
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
 	if (cudaStatus != cudaSuccess) {
@@ -242,8 +297,9 @@ __host__ cudaError_t XMatrixWithCuda(const char* T, int* xMatrix, const size_t t
 		fprintf(stderr, "cudaMemcpy failed!");
 		goto Error;
 	}
+#pragma endregion
 
-Error:
+	Error:
 	cudaFree(dev_T);
 	cudaFree(dev_xMatrix);
 	cudaFree(dev_tSize);
@@ -251,42 +307,43 @@ Error:
 	return cudaStatus;
 }
 
-__host__ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, int* dMatrix, int* xMatrix, const size_t tSize, const size_t pSize)
+__host__ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, int* dMatrix, int* xMatrix, const uint32_t tSize, const uint32_t pSize)
 {
+#pragma region Variables
 	std::chrono::time_point<std::chrono::high_resolution_clock> ts;
 	std::chrono::time_point<std::chrono::high_resolution_clock> te;
-
 	char* dev_T;
 	char* dev_P;
 	int* dev_dMatrix;
-	size_t* dev_tSize;
-	size_t* dev_pSize;
+	uint32_t* dev_tSize;
+	uint32_t* dev_pSize;
 	cudaError_t cudaStatus;
 	int* dev_xMatrix;
 	int threadsPerBlock = 1024;
-	size_t totalThreads = tSize + 1;
+	uint32_t totalThreads = tSize + 1;
 	int blocks = (totalThreads + threadsPerBlock - 1) / threadsPerBlock;
+#pragma endregion
+
 	cout << "Blocks: " << blocks << " Threads: " << totalThreads << endl;
+
 	// Choose which GPU to run on, change this on a multi-GPU system.
 	cudaStatus = cudaSetDevice(0);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
 		goto Error;
 	}
-
-	// Allocate GPU buffers for three vectors (two input, one output)    .
+#pragma region Malloc
+	// Allocate GPU buffers for three vectors (two input, one output).
 	cudaStatus = cudaMalloc((void**)&dev_T, (tSize + 1) * sizeof(char));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
-
 	cudaStatus = cudaMalloc((void**)&dev_P, (pSize + 1) * sizeof(char));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
-
 	cudaStatus = cudaMalloc((void**)&dev_dMatrix, (pSize + 1) * (tSize + 1) * sizeof(int));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
@@ -297,16 +354,19 @@ __host__ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, int* d
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
-	cudaStatus = cudaMalloc((void**)&dev_tSize, sizeof(size_t));
+	cudaStatus = cudaMalloc((void**)&dev_tSize, sizeof(uint32_t));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
-	cudaStatus = cudaMalloc((void**)&dev_pSize, sizeof(size_t));
+	cudaStatus = cudaMalloc((void**)&dev_pSize, sizeof(uint32_t));
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
+#pragma endregion
+
+#pragma region Memcpy
 	// Copy input vectors from host memory to GPU buffers.
 	cudaStatus = cudaMemcpy(dev_T + 1, T, tSize * sizeof(char), cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
@@ -319,12 +379,12 @@ __host__ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, int* d
 		fprintf(stderr, "cudaMemcpy failed!");
 		goto Error;
 	}
-	cudaStatus = cudaMemcpy(dev_tSize, &tSize, sizeof(size_t), cudaMemcpyHostToDevice);
+	cudaStatus = cudaMemcpy(dev_tSize, &tSize, sizeof(uint32_t), cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!");
 		goto Error;
 	}
-	cudaStatus = cudaMemcpy(dev_pSize, &pSize, sizeof(size_t), cudaMemcpyHostToDevice);
+	cudaStatus = cudaMemcpy(dev_pSize, &pSize, sizeof(uint32_t), cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!");
 		goto Error;
@@ -339,10 +399,24 @@ __host__ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, int* d
 		fprintf(stderr, "cudaMalloc failed!");
 		goto Error;
 	}
-
+#pragma endregion
+#pragma region WarmUp
+	warm_up_gpu << <blocks, threadsPerBlock >> > ();
+	cudaStatus = cudaGetLastError();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "warm_up_gpu launch failed: %s\n", cudaGetErrorString(cudaStatus));
+		goto Error;
+	}
+	cudaStatus = cudaDeviceSynchronize();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching warm_up_gpu!\n", cudaStatus);
+		goto Error;
+	}
 	// Launch a kernel on the GPU with one thread for each element.
+#pragma endregion
 	ts = high_resolution_clock::now();
 	CalculateDistanceMatrixKernel << <blocks, threadsPerBlock, pSize + 1 >> > (dev_T, dev_P, dev_xMatrix, dev_dMatrix, dev_pSize, dev_tSize);
+#pragma region PostKernel
 
 	// Check for any errors launching the kernel
 	cudaStatus = cudaGetLastError();
@@ -367,8 +441,9 @@ __host__ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, int* d
 		fprintf(stderr, "cudaMemcpy failed!");
 		goto Error;
 	}
+#pragma endregion
 
-Error:
+	Error:
 	cudaFree(dev_P);
 	cudaFree(dev_T);
 	cudaFree(dev_dMatrix);
@@ -379,16 +454,19 @@ Error:
 	return cudaStatus;
 }
 
-__host__ string CalculatePathFromD(int* dMatrix, const char* T, const char* P, const size_t tSize, const size_t pSize, int* distance)
+__host__ string CalculatePathFromD(int* dMatrix, const char* T, const char* P, const uint32_t tSize, const uint32_t pSize, int* distance)
 {
-	size_t i = pSize;
-	size_t j = tSize;
+	uint32_t i = pSize;
+	uint32_t j = tSize;
 	string result;
 	stack<string> path;
+	ostringstream operation;
 
 	*distance = 0;
 	while (i != 0 || j != 0) {
 		int minValue = 0;
+		operation.clear();
+		operation.str("");
 		(*distance)++;
 		if (i != 0 && j != 0)
 			minValue = min(dMatrix[(i - 1) * (tSize + 1) + j], min(dMatrix[i * (tSize + 1) + (j - 1)], dMatrix[(i - 1) * (tSize + 1) + (j - 1)]));
@@ -402,19 +480,20 @@ __host__ string CalculatePathFromD(int* dMatrix, const char* T, const char* P, c
 				(*distance)--;
 			}
 			else {
-				path.push(string("R, ") + to_string(j - 1) + ", " + P[i - 1] + "\n");
+				operation << "R, " << i - 1 << ", " << P[i - 1] << "\n";
 			}
 			i--;
 			j--;
 		}
 		else if (j != 0 && minValue == dMatrix[i * (tSize + 1) + (j - 1)]) {
-			path.push(string("D, ") + to_string(j - 1) + ", " + T[j - 1] + "\n");
+			operation << "D, " << i << ", " << T[j - 1] << "\n";
 			j--;
 		}
 		else if (i != 0 && minValue == dMatrix[(i - 1) * (tSize + 1) + j]) {
-			path.push(string("I, ") + to_string(j - 1) + ", " + P[i - 1] + "\n");
+			operation << "I, " << i - 1 << ", " << P[i - 1] << "\n";
 			i--;
 		}
+		path.push(operation.str());
 	}
 	while (!path.empty()) {
 		result.append(path.top());
@@ -448,7 +527,7 @@ __host__ void ReadFile(const char* filename, string* line1, string* line2)
 		cerr << "Error reading second line or file does not have a second line." << endl;
 	file.close();
 }
-__host__ void PrintMatrix(int* matrix, size_t height, size_t width) {
+__host__ void PrintMatrix(int* matrix, uint32_t height, uint32_t width) {
 	for (int j = 0; j < height; ++j) {
 		for (int i = 0; i < width; ++i) {
 			cout << setw(3) << matrix[j * width + i];
@@ -457,13 +536,14 @@ __host__ void PrintMatrix(int* matrix, size_t height, size_t width) {
 	}
 	cout << endl;
 }
-__host__ void PrintMatrixToFile(int* matrix, size_t height, size_t width) {
+__host__ void PrintMatrixToFile(int* matrix, uint32_t height, uint32_t width) {
 	ofstream myfile;
 	myfile.open("DMatrix.txt");
 	for (int j = 0; j < height; ++j) {
 		for (int i = 0; i < width; ++i) {
-			myfile << matrix[j * width + i];
+			myfile << matrix[j * width + i] << " ";
 		}
+		myfile << endl;
 	}
 	myfile.close();
 }
