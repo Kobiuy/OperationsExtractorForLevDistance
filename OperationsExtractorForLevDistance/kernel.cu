@@ -189,7 +189,7 @@ int main(int argc, char** argv)
 	}
 
 	//PrintMatrix(dMatrix, pSize + 1, tSize + 1);
-	PrintMatrixToFile(dMatrix, pSize + 1, tSize + 1);
+	//PrintMatrixToFile(dMatrix, pSize + 1, tSize + 1);
 
 	string result = CalculatePathFromD(dMatrix, T, P, tSize, pSize, &distance);
 	//std::cout << result << endl;
