@@ -1,6 +1,6 @@
 ﻿// compute-sanitizer OperationsExtractorForLevDistance.exe catgactg tactg> a.txt 2>&1
 #include "kernel.h"
-
+// TODO wypełnianie d w kernelu
 // Kod "rozgrzewający" kartę https://stackoverflow.com/questions/59815212/best-way-to-warm-up-the-gpu-with-cuda (Warm up the GPU)
 __global__ void warm_up_gpu() {
 	unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -93,6 +93,9 @@ __global__ void CalculateDistanceMatrixKernel(char* T, char* P, int* xMatrix, in
 
 int main(int argc, char** argv)
 {
+	std::chrono::time_point<std::chrono::high_resolution_clock> ts;
+	std::chrono::time_point<std::chrono::high_resolution_clock> te;
+	ts = high_resolution_clock::now();
 #pragma region Variables
 	const char* filename = "dane.txt";
 	string line1, line2;
@@ -157,6 +160,8 @@ int main(int argc, char** argv)
 	//PrintMatrixToFile(dMatrix, pSize + 1, tSize + 1);
 
 	string result = CalculatePathFromD(dMatrix, T, P, tSize, pSize, &distance);
+
+
 	//std::cout << result << endl;
 	std::cout << distance << endl;
 	std::cout << "Distance: " << dMatrix[pSize * (tSize + 1) + tSize] << endl;
@@ -172,6 +177,8 @@ int main(int argc, char** argv)
 
 	free(dMatrix);
 	free(xMatrix);
+	te = high_resolution_clock::now();
+	cout << "Time of kernels with malloc:    " << setw(7) << 0.001 * duration_cast<microseconds>(te - ts).count() << " nsec" << endl;
 	return 0;
 }
 
