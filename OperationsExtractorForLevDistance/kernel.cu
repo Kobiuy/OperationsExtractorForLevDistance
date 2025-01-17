@@ -1,6 +1,5 @@
 ﻿// compute-sanitizer OperationsExtractorForLevDistance.exe catgactg tactg> a.txt 2>&1
 #include "kernel.h"
-// TODO wypełnianie d w kernelu
 // Kod "rozgrzewający" kartę https://stackoverflow.com/questions/59815212/best-way-to-warm-up-the-gpu-with-cuda (Warm up the GPU)
 __global__ void warm_up_gpu() {
 	unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
