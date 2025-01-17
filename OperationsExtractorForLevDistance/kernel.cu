@@ -1,35 +1,7 @@
-﻿#include "cuda_runtime.h"
-#include "device_launch_parameters.h"
+﻿// compute-sanitizer OperationsExtractorForLevDistance.exe catgactg tactg> a.txt 2>&1
+#include "kernel.h"
 
-// compute-sanitizer OperationsExtractorForLevDistance.exe catgactg tactg> a.txt 2>&1
-// Todo - poprawa sync
-// Pytania do Pana:
-// Czy można zrobić ograniczenie na rozmiar słów np. 65 tysięcy znaków (wtedy więcej można odpalic na raz wątków, więc działa szybciej)
-#include <stdio.h>
-#include <cmath>
-#include <string>
-#include <cstring>
-#include <fstream>
-#include <iomanip>
-#include <iostream>
-#include <sstream>
-#include <stack>
-#include <chrono>
-#define A_SIZE 26
-using namespace std;
-using namespace std::chrono;
-
-__host__ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, int* dMatrix, int* xMatrix, const uint32_t tSize, const uint32_t pSize);
-__host__ int main(int argc, char** argv);
-__host__ void ReadFile(const char* filename, string* line1, string* line2);
-__host__ cudaError_t XMatrixWithCuda(const char* T, int* xMatrix, const uint32_t tSize);
-__host__ string CalculatePathFromD(int* dMatrix, const char* T, const char* P, const uint32_t tSize, const uint32_t pSize, int* distance);
-__host__ void WriteToFile(string result, int distance);
-__host__ void WrongArgsPrint();
-__host__ void PrintMatrix(int* matrix, uint32_t height, uint32_t width);
-__host__ void PrintMatrixToFile(int* matrix, uint32_t height, uint32_t width);
-
-// Kod "rozgrzewający" kartę https://stackoverflow.com/questions/59815212/best-way-to-warm-up-the-gpu-with-cuda
+// Kod "rozgrzewający" kartę https://stackoverflow.com/questions/59815212/best-way-to-warm-up-the-gpu-with-cuda (Warm up the GPU)
 __global__ void warm_up_gpu() {
 	unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
 	float ia, ib;
@@ -37,13 +9,14 @@ __global__ void warm_up_gpu() {
 	ib += ia + tid;
 }
 __global__ void CalculateXMatrixKernel(char* T, int* xMatrix, uint32_t* tSize) {
-	int global_tid = threadIdx.x + blockDim.x * blockIdx.x;
+	uint32_t global_tid = threadIdx.x + blockDim.x * blockIdx.x;
 	uint8_t aSize = 26;
-	int firstInRow = global_tid * (*tSize + 1);
-	xMatrix[firstInRow] = 0;
+	uint32_t tSizeLocal = *tSize;
+	uint32_t firstInRow = global_tid * (tSizeLocal + 1);
+	xMatrix[firstInRow] = 0; // Wypełnianie pierwszej kolumny (Filing first column)
 	char myLetter = global_tid + 'A';
-	for (int i = 1; i <= *tSize; ++i) {
-		;		if (T[i] == myLetter) {
+	for (uint32_t i = 1; i <= tSizeLocal; ++i) {
+		if (T[i] == myLetter) {
 			xMatrix[i + firstInRow] = i;
 		}
 		else {
@@ -52,12 +25,11 @@ __global__ void CalculateXMatrixKernel(char* T, int* xMatrix, uint32_t* tSize) {
 	}
 }
 
-__global__ void CalculateDistanceMatrixKernel(char* T, char* P, int* xMatrix, int* dMatrix, uint32_t* pSize, uint32_t* tSize)
-{
+__global__ void CalculateDistanceMatrixKernel(char* T, char* P, int* xMatrix, int* dMatrix, uint32_t* pSize, uint32_t* tSize) {
 #pragma region Variables
 	uint32_t pSizeLocal = *pSize;
 	uint32_t tSizeLocal = *tSize;
-	int global_tid = threadIdx.x + blockDim.x * blockIdx.x;
+	uint32_t global_tid = threadIdx.x + blockDim.x * blockIdx.x;
 	uint16_t tid = threadIdx.x;
 	uint8_t lane_id = threadIdx.x % 32;
 	uint8_t warpId = threadIdx.x / 32;
@@ -72,35 +44,28 @@ __global__ void CalculateDistanceMatrixKernel(char* T, char* P, int* xMatrix, in
 	int firstInRowId;
 #pragma endregion
 
-	for (int i = tid; i <= pSizeLocal; i += blockDim.x) { // Kopiowanie p do pamięci współdzielonej
+	for (int i = tid; i <= pSizeLocal; i += blockDim.x) { // Kopiowanie p do pamięci współdzielonej (Copying p into shared memory)
 		p[i] = P[i];
 	}
 
-	if (global_tid > tSizeLocal) return;
+	if (global_tid > tSizeLocal) return; // Kończenie nadmiarowych wątków (returning from redundant threads)
 
-	dMatrix[global_tid] = global_tid; // Pierwszy wiersz tablicy
+	dMatrix[global_tid] = global_tid; // Wypełnianie pierwszego wiersza (filling first row)
 	Dvar = global_tid;
-	firstInRowId = 0;
+
+	firstInRowId = 0; // Zmienna pozwalająca uniknięcia operacji mnożenia w pętli (variable avoiding multiplication in loop)
 
 	for (int row = 1; row <= pSizeLocal; ++row) {
-
 		prevDvarId = firstInRowId + (global_tid - 1);
-		while (blockIdx.x != 0 && tid == 0 && dMatrix[prevDvarId] == -1) {} // Czekanie na poprzedni blok
+
+		if (blockIdx.x != 0 && tid == 0)
+			while (dMatrix[prevDvarId] == -1) {} // Czekanie na poprzedni blok (waiting for previous block)
 		__syncthreads();
 
 		Avar = __shfl_up(Dvar, 1);
 		if (lane_id == 0 && global_tid != 0) {
 			Avar = dMatrix[prevDvarId];
 		}
-		//__syncthreads();
-		//Avar = __shfl_up(Dvar, 1);
-		//temp = (row - 1) * (tSizeLocal + 1) + (global_tid - 1);
-		//if (lane_id == 0 && global_tid != 0) { // waiting for other blocks
-		//	while (dMatrix[temp] == -1) {}
-		//	Avar = dMatrix[temp];
-		//}
-
-		Bvar = Dvar;
 
 		if (global_tid == 0) {
 			Dvar = row;
@@ -109,8 +74,8 @@ __global__ void CalculateDistanceMatrixKernel(char* T, char* P, int* xMatrix, in
 			Dvar = Avar;
 		}
 		else {
-
 			Xvar = xMatrix[(p[row] - 'A') * (tSizeLocal + 1) + global_tid];
+			Bvar = Dvar;
 			if (Xvar == 0) {
 				Dvar = 1 + min(Avar, min(Bvar, row + global_tid - 1));
 
@@ -123,7 +88,6 @@ __global__ void CalculateDistanceMatrixKernel(char* T, char* P, int* xMatrix, in
 
 		firstInRowId += (tSizeLocal + 1);
 		dMatrix[firstInRowId + global_tid] = Dvar;
-
 	}
 }
 
@@ -145,7 +109,6 @@ int main(int argc, char** argv)
 		filename = argv[1];
 #pragma endregion
 
-	// Read File
 	ReadFile(filename, &line1, &line2);
 	if (line1 == "" || line2 == "") {
 		cerr << "Error reading file" << endl;
@@ -157,6 +120,7 @@ int main(int argc, char** argv)
 	const uint32_t tSize = line1.length();
 	const uint32_t pSize = line2.length();
 
+#pragma region Malloc
 	int* dMatrix = (int*)malloc((tSize + 1) * (pSize + 1) * sizeof(int));
 	if (dMatrix == NULL) {
 		perror("Memory allocation failed for dMatrix");
@@ -167,8 +131,9 @@ int main(int argc, char** argv)
 		perror("Memory allocation failed for xMatrix");
 		return 1;
 	}
+#pragma endregion
 
-	for (uint32_t i = 0; i < pSize + 1; ++i) { // Setting Sentinel
+	for (uint32_t i = 0; i < pSize + 1; ++i) { // Ustawianie wartownika (Setting Sentinel)
 		for (uint32_t j = 0; j < tSize + 1; ++j) {
 			dMatrix[i * (tSize + 1) + j] = -1;
 		}
@@ -205,6 +170,8 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
+	free(dMatrix);
+	free(xMatrix);
 	return 0;
 }
 
@@ -425,8 +392,7 @@ __host__ cudaError_t DistanceMatrixWithCuda(const char* T, const char* P, int* d
 		goto Error;
 	}
 
-	// cudaDeviceSynchronize waits for the kernel to finish, and returns
-	// any errors encountered during the launch.
+	// cudaDeviceSynchronize waits for the kernel to finish, and returns any errors encountered during the launch.
 	cudaStatus = cudaDeviceSynchronize();
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching addKernel!\n", cudaStatus);
