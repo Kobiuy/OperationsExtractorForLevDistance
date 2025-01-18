@@ -1,5 +1,4 @@
-﻿// compute-sanitizer OperationsExtractorForLevDistance.exe catgactg tactg> a.txt 2>&1
-#include "kernel.h"
+﻿#include "kernel.h"
 // Kod "rozgrzewający" kartę https://stackoverflow.com/questions/59815212/best-way-to-warm-up-the-gpu-with-cuda (Warm up the GPU)
 __global__ void warm_up_gpu() {
 	unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -9,7 +8,6 @@ __global__ void warm_up_gpu() {
 }
 __global__ void CalculateXMatrixKernel(char* T, int* xMatrix, uint32_t* tSize) {
 	uint32_t global_tid = threadIdx.x + blockDim.x * blockIdx.x;
-	uint8_t aSize = 26;
 	uint32_t tSizeLocal = *tSize;
 	uint32_t firstInRow = global_tid * (tSizeLocal + 1);
 	xMatrix[firstInRow] = 0; // Wypełnianie pierwszej kolumny (Filing first column)
@@ -31,9 +29,8 @@ __global__ void CalculateDistanceMatrixKernel(char* T, char* P, int* xMatrix, in
 	uint32_t global_tid = threadIdx.x + blockDim.x * blockIdx.x;
 	uint16_t tid = threadIdx.x;
 	uint8_t lane_id = threadIdx.x % 32;
-	uint8_t warpId = threadIdx.x / 32;
-	extern __shared__ char p[];
-	char t = T[global_tid];
+	extern __shared__ char p[]; // Pamięć współdzielona dla p (Shared memory for p)
+	char t = T[global_tid]; // Litera z T odpowiadająca wątkowi (Letter from T corresponding to thread)
 	int Dvar = 0;
 	int Bvar = 0;
 	int Cvar = 0;
@@ -162,8 +159,8 @@ int main(int argc, char** argv)
 
 
 	//std::cout << result << endl;
-	std::cout << distance << endl;
-	std::cout << "Distance: " << dMatrix[pSize * (tSize + 1) + tSize] << endl;
+	std::cout << "Distance: " << distance << endl;
+	//std::cout << "Distance: " << dMatrix[pSize * (tSize + 1) + tSize] << endl;
 
 
 	WriteToFile(result, distance);
@@ -177,7 +174,7 @@ int main(int argc, char** argv)
 	free(dMatrix);
 	free(xMatrix);
 	te = high_resolution_clock::now();
-	cout << "Time of kernels with malloc:    " << setw(7) << 0.001 * duration_cast<microseconds>(te - ts).count() << " nsec" << endl;
+	cout << "Time of whole program:    " << setw(7) << 0.001 * duration_cast<microseconds>(te - ts).count() << " nsec" << endl;
 	return 0;
 }
 
@@ -500,8 +497,8 @@ __host__ void ReadFile(const char* filename, string* line1, string* line2)
 	file.close();
 }
 __host__ void PrintMatrix(int* matrix, uint32_t height, uint32_t width) {
-	for (int j = 0; j < height; ++j) {
-		for (int i = 0; i < width; ++i) {
+	for (uint32_t j = 0; j < height; ++j) {
+		for (uint32_t i = 0; i < width; ++i) {
 			cout << setw(3) << matrix[j * width + i];
 		}
 		cout << endl;
@@ -511,8 +508,8 @@ __host__ void PrintMatrix(int* matrix, uint32_t height, uint32_t width) {
 __host__ void PrintMatrixToFile(int* matrix, uint32_t height, uint32_t width) {
 	ofstream myfile;
 	myfile.open("DMatrix.txt");
-	for (int j = 0; j < height; ++j) {
-		for (int i = 0; i < width; ++i) {
+	for (uint32_t j = 0; j < height; ++j) {
+		for (uint32_t i = 0; i < width; ++i) {
 			myfile << matrix[j * width + i] << " ";
 		}
 		myfile << endl;
